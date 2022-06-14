@@ -1,7 +1,7 @@
 const fs = require('fs')
 const url = require('url')
 const path = require('path')
-const fetch = require('../helpers/path')
+const fetch = require('../helpers/fetch')
 const uri2path = require('file-uri-to-path')
 const data2buf = require('data-uri-to-buffer')
 const mime = require('mime-types')
@@ -10,7 +10,7 @@ const { expandEnvironmentVariables } = require('../helpers/path')
 // TODO: redeuce dep size
 const requireg = require('requireg')
 
-const download = (job, settings, asset, timeout = 0) => {
+const download = async (job, settings, asset, timeout = 0) => {
     if (asset.type == 'data') return Promise.resolve();
 
     // eslint-disable-next-line
@@ -67,44 +67,30 @@ const download = (job, settings, asset, timeout = 0) => {
         case 'http':
         case 'https':
             /* TODO: maybe move to external package ?? */
-            const src = decodeURI(asset.src) === asset.src ? encodeURI(asset.src) : asset.src
-            return fetch(src, { ...(asset.params || {}), ...(timeout ? { timeout } : {}) })
-                .then(res => {
-                    // Set a file extension based on content-type header if not already set
-                    if (!asset.extension) {
-                        const contentType = res.headers.get('content-type')
-                        const fileExt = mime.extension(contentType) || undefined
+            try {
+                const src = decodeURI(asset.src) === asset.src ? encodeURI(asset.src) : asset.src
+                const { response: res, buffer } = await fetch(src, { ...(asset.params || {}), ...(timeout ? { timeout } : {}) })
+                // Set a file extension based on content-type header if not already set
+                if (!asset.extension) {
+                    const contentType = res.headers.get('content-type')
+                    const fileExt = mime.extension(contentType) || undefined
 
-                        asset.extension = fileExt
-                        const destHasExtension = path.extname(asset.dest) ? true : false
-                        //don't do this if asset.dest already has extension else it gives you example.jpg.jpg  like file in case of  assets and aep/aepx file
-                        if (asset.extension && !destHasExtension) {
-                            asset.dest += `.${fileExt}`
-                        }
+                    asset.extension = fileExt
+                    const destHasExtension = path.extname(asset.dest) ? true : false
+                    //don't do this if asset.dest already has extension else it gives you example.jpg.jpg  like file in case of  assets and aep/aepx file
+                    if (asset.extension && !destHasExtension) {
+                        asset.dest += `.${fileExt}`
                     }
-
-                    const stream = fs.createWriteStream(asset.dest)
-
-                    return new Promise((resolve, reject) => {
-                        const errorHandler = (error) => {
-                            reject(new Error({ reason: 'Unable to download file', meta: { src, error } }))
-                        };
-
-                        res.body
-                            .on('error', errorHandler)
-                            .pipe(stream)
-
-                        stream
-                            .on('error', errorHandler)
-                            .on('finish', resolve)
-                    })
-                }).catch(err => {
-                    if (err.name === "AbortError") {
-                        Promise.reject("Request timeout for downloading file")
-                    } else {
-                        Promise.reject(err.message || "Something went wrong")
-                    }
-                })
+                }
+                await fs.promises.writeFile(asset.dest, Buffer.from(buffer))
+                return true
+            } catch (err) {
+                if (err.name === "AbortError") {
+                    Promise.reject("Request timeout for downloading file")
+                } else {
+                    Promise.reject(err.message || "Something went wrong")
+                }
+            }
 
         case 'file':
             const filepath = uri2path(expandEnvironmentVariables(asset.src))

@@ -10,10 +10,11 @@ module.exports = async (resource, options = {}) => {
         ...options,
         signal: controller.signal
     });
-    clearTimeout(id);
     if (!response.ok) {
         await response.ejectFromCache();
         Promise.reject({ reason: 'Initial error downloading file', meta: { src: resource, error: res.error } })
     }
-    return response;
+    const buffer = await response.arrayBuffer()
+    clearTimeout(id);
+    return { response, buffer };
 }
