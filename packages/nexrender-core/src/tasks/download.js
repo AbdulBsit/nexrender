@@ -1,16 +1,16 @@
-const fs       = require('fs')
-const url      = require('url')
-const path     = require('path')
-const fetch    = require('node-fetch').default
+const fs = require('fs')
+const url = require('url')
+const path = require('path')
+const fetch = require('../helpers/path')
 const uri2path = require('file-uri-to-path')
 const data2buf = require('data-uri-to-buffer')
 const mime = require('mime-types')
-const {expandEnvironmentVariables} = require('../helpers/path')
+const { expandEnvironmentVariables } = require('../helpers/path')
 
 // TODO: redeuce dep size
 const requireg = require('requireg')
 
-const download = (job, settings, asset) => {
+const download = (job, settings, asset, timeout = 0) => {
     if (asset.type == 'data') return Promise.resolve();
 
     // eslint-disable-next-line
@@ -67,16 +67,15 @@ const download = (job, settings, asset) => {
         case 'http':
         case 'https':
             /* TODO: maybe move to external package ?? */
-            const src = decodeURI(asset.src) === asset.src ? encodeURI(asset.src): asset.src
-            return fetch(src, asset.params || {})
-                .then(res => res.ok ? res : Promise.reject({reason: 'Initial error downloading file', meta: {src, error: res.error}}))
+            const src = decodeURI(asset.src) === asset.src ? encodeURI(asset.src) : asset.src
+            return fetch(src, { ...(asset.params || {}), ...(timeout ? { timeout } : {}) })
                 .then(res => {
                     // Set a file extension based on content-type header if not already set
                     if (!asset.extension) {
-                      const contentType = res.headers.get('content-type')
-                      const fileExt = mime.extension(contentType) || undefined
+                        const contentType = res.headers.get('content-type')
+                        const fileExt = mime.extension(contentType) || undefined
 
-                       asset.extension = fileExt
+                        asset.extension = fileExt
                         const destHasExtension = path.extname(asset.dest) ? true : false
                         //don't do this if asset.dest already has extension else it gives you example.jpg.jpg  like file in case of  assets and aep/aepx file
                         if (asset.extension && !destHasExtension) {
@@ -88,7 +87,7 @@ const download = (job, settings, asset) => {
 
                     return new Promise((resolve, reject) => {
                         const errorHandler = (error) => {
-                            reject(new Error({reason: 'Unable to download file', meta: {src, error}}))
+                            reject(new Error({ reason: 'Unable to download file', meta: { src, error } }))
                         };
 
                         res.body
@@ -99,7 +98,13 @@ const download = (job, settings, asset) => {
                             .on('error', errorHandler)
                             .on('finish', resolve)
                     })
-                });
+                }).catch(err => {
+                    if (err.name === "AbortError") {
+                        Promise.reject("Request timeout for downloading file")
+                    } else {
+                        Promise.reject(err.message || "Something went wrong")
+                    }
+                })
 
         case 'file':
             const filepath = uri2path(expandEnvironmentVariables(asset.src))
@@ -114,12 +119,12 @@ const download = (job, settings, asset) => {
             const rd = fs.createReadStream(filepath)
             const wr = fs.createWriteStream(asset.dest)
 
-            return new Promise(function(resolve, reject) {
+            return new Promise(function (resolve, reject) {
                 rd.on('error', reject)
                 wr.on('error', reject)
                 wr.on('finish', resolve)
                 rd.pipe(wr);
-            }).catch(function(error) {
+            }).catch(function (error) {
                 rd.destroy()
                 wr.end()
                 throw error
@@ -145,13 +150,15 @@ const download = (job, settings, asset) => {
  * This task is used to download/copy every entry in the "job.assets"
  * and place it nearby the project asset
  */
-module.exports = function(job, settings) {
+module.exports = function (job, settings) {
     settings.logger.log(`[${job.uid}] downloading assets...`)
 
     const promises = [].concat(
-        download(job, settings, job.template),
-        job.assets.map(asset => download(job, settings, asset))
+        download(job, settings, job.template, settings.downloadTimeout || 60000),
+        job.assets.map(asset => download(job, settings, asset, settings.downloadTimeout || 60000))
     )
-
-    return Promise.all(promises).then(() => job);
+    return Promise.allSettled(promises).then((promises) => {
+        settings.logger.log(`[${job.uid}] ${promises?.filter(({ status }) => status === "fulfilled")?.length} out of ${promises.length} Files Downloaded successfully!`)
+        return job
+    });
 }
